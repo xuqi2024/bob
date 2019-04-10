@@ -2789,7 +2789,8 @@ class HttpUrlValidator:
 
 class ArchiveValidator:
     def __init__(self):
-        self.__validTypes = schema.Schema({'backend': schema.Or('none', 'file', 'http', 'shell', 'azure')},
+        self.__validTypes = schema.Schema({'backend': schema.Or('none',
+            'file', 'http', 'shell', 'azure', 'artifactory')},
             ignore_extra_keys=True)
         baseArchive = {
             'backend' : str,
@@ -2815,12 +2816,19 @@ class ArchiveValidator:
             schema.Optional('key') : str,
             schema.Optional('sasToken"') : str,
         })
+        artifactoryArchive = baseArchive.copy()
+        artifactoryArchive.update({
+            'url' : str,
+            schema.Optional('key') : str,
+            schema.Optional('username') : str,
+        })
         self.__backends = {
             'none' : schema.Schema(baseArchive),
             'file' : schema.Schema(fileArchive),
             'http' : schema.Schema(httpArchive),
             'shell' : schema.Schema(shellArchive),
             'azure' : schema.Schema(azureArchive),
+            'artifactory' : schema.Schema(artifactoryArchive),
         }
 
     def validate(self, data):
