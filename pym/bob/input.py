@@ -2822,6 +2822,7 @@ class ArchiveValidator:
             schema.Optional('key') : str,
             schema.Optional('username') : str,
         })
+
         self.__backends = {
             'none' : schema.Schema(baseArchive),
             'file' : schema.Schema(fileArchive),
