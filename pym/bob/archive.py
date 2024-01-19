@@ -405,7 +405,7 @@ class BaseArchive(TarHelper):
                     self._extract(fo, audit, content)
             return (True, None, None)
         except ArtifactNotFoundError:
-            return (False, "not found", WARNING)
+            return (False, "Not found in the backend", WARNING)
         except ArtifactDownloadError as e:
             return (False, e.reason, WARNING)
         except BuildError as e:
@@ -437,10 +437,11 @@ class BaseArchive(TarHelper):
         # Set default signal handler so that KeyboardInterrupt is raised.
         # Needed to gracefully handle ctrl+c.
         signal.signal(signal.SIGINT, signal.default_int_handler)
-
         try:
             with self._openDownloadFile(key, suffix) as (name, fileobj):
                 ret = readFileOrHandle(name, fileobj)
+         
+                
             return (ret, None, None)
         except ArtifactNotFoundError:
             return (None, "not found", WARNING)
@@ -450,6 +451,8 @@ class BaseArchive(TarHelper):
             raise
         except OSError as e:
             raise BuildError("Cannot download file: " + str(e))
+        except Exception as e:
+            raise BuildError("Other  " + str(e))
         finally:
             # Restore signals to default so that Ctrl+C kills process. Needed
             # to prevent ugly backtraces when user presses ctrl+c.
@@ -1128,11 +1131,11 @@ class ArtifactoryArchive(BaseArchive):
             packageResultId[4:] + suffix])
 
     def _remoteName(self, buildId, suffix):
+        a = "{}/{}".format(self.__url, self.__makeBlobName(buildId, suffix))
         return "{}/{}".format(self.__url, self.__makeBlobName(buildId, suffix))
 
     def _makeArtifactoryPath(self, blobName):
         from artifactory import ArtifactoryPath
-
         if self.__username and self.__key:
             return ArtifactoryPath(
                 "{}/{}".format(self.__url, blobName.replace(os.sep, '_')),
@@ -1148,19 +1151,23 @@ class ArtifactoryArchive(BaseArchive):
     def _openDownloadFile(self, buildId, suffix):
         from artifactory import ArtifactoryPath
         try:
-            fd = self._makeArtifactoryPath(self.__makeBlobName(buildId,suffix)).open()
+            fd = self._makeArtifactoryPath(self.__makeBlobName(buildId,suffix))
+            
+            if not fd.exists():
+                raise ArtifactNotFoundError() 
+            fd = fd.open()
             return ArtifactoryDownloader(fd)
         except RuntimeError as e:
             raise ArtifactDownloadError(str(e))
 
-    def _openUploadFile(self, buildId, suffix):
+    def _openUploadFile(self, buildId, suffix ,overwrite):
         blobName = self.__makeBlobName(buildId,suffix)
         from artifactory import ArtifactoryPath
         try:
             fd = self._makeArtifactoryPath(blobName)
             try:
-                fd.open()
-                if fd.exists():
+
+                if not overwrite and fd.exists():
                     raise ArtifactExistsError()
             except RuntimeError:
                 pass
@@ -1168,7 +1175,7 @@ class ArtifactoryArchive(BaseArchive):
             raise ArtifactUploadError(str(e))
         (tmpFd, tmpName) = mkstemp()
         os.close(tmpFd)
-        return ArtifactoryUploader(self, fd, tmpName, blobName)
+        return ArtifactoryUploader(self, fd, tmpName, blobName, overwrite)
 
     def upload(self, step, buildIdFile, fingerprintFile, tgzFile):
         if not self.canUploadJenkins():
@@ -1232,7 +1239,7 @@ class ArtifactoryArchive(BaseArchive):
         tmpName = None
         try:
             (tmpFd, tmpName) = mkstemp(dir=".")
-
+            
             path = archive._makeArtifactoryPath(remoteBlob)
 
             with path.open() as fd:
@@ -1301,10 +1308,11 @@ class ArtifactoryDownloader:
         return False
 
 class ArtifactoryUploader:
-    def __init__(self, artifactory, fd, name, remoteName):
+    def __init__(self, artifactory, fd, name, remoteName, overwrite):
         self.__artifactory = artifactory
         self.__name = name
         self.__remoteName = remoteName
+        self.__overwrite = overwrite
 
     def __enter__(self):
         return (self.__name, None)
