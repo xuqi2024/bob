@@ -155,7 +155,7 @@ class JenkinsJob:
             if vid in self.__deps: del self.__deps[vid]
 
             # add dependencies unless they are built by this job or invalid
-            for dep in step.getAllDepSteps(True):
+            for dep in step.getAllDepSteps():
                 if not dep.isValid(): continue
                 vid = getJenkinsVariantId(dep)
                 if vid in self.__steps: continue
@@ -442,6 +442,7 @@ class JenkinsJob:
             "upload=" + ("1" if self.__upload else "0"),
             "copy=" + config.artifactsCopy,
             "share=" + config.sharedDir,
+            "always-checkout=" + ("1" if config.scmAlwaysCheckout else "0"),
         ])
         if config.sharedQuota:
             execCmds.append("quota=" + config.sharedQuota)
@@ -564,7 +565,7 @@ class JobNameCalculator:
                     job = parentJob
 
                 # recurse on dependencies
-                for d in step.getAllDepSteps(True):
+                for d in step.getAllDepSteps():
                     job.childs |= addStep(d, job)
             else:
                 job.parents |= parentJob.pkgs
@@ -696,7 +697,7 @@ def _genJenkinsJobs(step, jobs, nameCalculator, upload, download, seenPackages, 
                 _genJenkinsJobs(toolStep, jobs, nameCalculator, upload, download,
                                 seenPackages, allVariantIds, shortdescription)
 
-        sandbox = step.getSandbox(True)
+        sandbox = step.getSandbox()
         if sandbox is not None:
             sandboxStep = sandbox.getStep()
             stack = "/".join(sandboxStep.getPackage().getStack())
@@ -809,8 +810,11 @@ def doJenkinsAdd(recipes, argv):
     parser.add_argument('--no-sandbox', action='store_false', dest='sandbox', default=True,
         help="Disable sandboxing")
     parser.add_argument("--credentials", help="Credentials UUID for SCM checkouts")
-    parser.add_argument('--clean', action='store_true', default=False,
-        help="Do clean builds (clear workspace)")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--clean', action='store_true', default=True,
+        help="Do clean builds (clear workspace, default)")
+    group.add_argument('--incremental', action='store_false', dest='clean',
+        help="Reuse workspace for incremental builds")
     parser.add_argument("name", help="Symbolic name for server")
     parser.add_argument("url", help="Server URL")
     group = parser.add_mutually_exclusive_group()

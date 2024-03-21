@@ -10,6 +10,7 @@ from .errors import BobError, BuildError, MultiBobError
 from .input import RecipeSet
 from .invoker import Invoker, InvocationMode
 from .languages import StepSpec
+from .scm import getScm
 from .state import BobState
 from .stringparser import Env
 from .tty import log, stepMessage, stepAction, stepExec, setProgress, ttyReinit, \
@@ -64,6 +65,17 @@ def hashWorkspace(step):
     # Cache is also used by share module
     return hashDirectory(step.getStoragePath(),
         os.path.join(os.path.dirname(step.getWorkspacePath()), "cache.bin"))
+
+class HashOnce:
+    def __init__(self, step):
+        self.step = step
+        self.result = None
+    def hashWorkspace(self):
+        if self.result is None:
+            self.result = hashWorkspace(self.step)
+        return self.result
+    def invalidate(self):
+        self.result = None
 
 CHECKOUT_STATE_VARIANT_ID = None    # Key in checkout directory state for step variant-id
 CHECKOUT_STATE_BUILD_ONLY = 1       # Key for checkout state of build-only builds
@@ -606,16 +618,11 @@ cd {ROOT}
             self.__workspaceLocks[path] = ret = asyncio.Lock()
         return ret
 
-    async def _generateAudit(self, step, depth, resultHash, executed=True):
+    async def _generateAudit(self, step, depth, resultHash, buildId, executed=True):
         auditPath = os.path.join(os.path.dirname(step.getWorkspacePath()), "audit.json.gz")
         if os.path.lexists(auditPath): removePath(auditPath)
         if not self.__audit:
             return None
-
-        if step.isCheckoutStep():
-            buildId = resultHash
-        else:
-            buildId = await self._getBuildId(step, depth)
 
         def auditOf(s):
             return os.path.join(os.path.dirname(s.getWorkspacePath()), "audit.json.gz")
@@ -650,7 +657,7 @@ cd {ROOT}
                         if dep.isValid(): audit.addArg(auditOf(dep))
                 except BobError as e:
                     a.fail(e.slogan, WARNING)
-                    if self.__verbose < INFO:
+                    if not a.visible:
                         stepMessage(step, "AUDIT", "{}: failed: {}"
                                             .format(step.getWorkspacePath(), e.slogan),
                                     WARNING)
@@ -780,7 +787,8 @@ cd {ROOT}
                 logger.setError(invoker.getStdio().strip())
             raise BuildError("{} returned with {}"
                                 .format(absRunFile, ret),
-                             help="You may resume at this point with '--resume' after fixing the error.")
+                             help="You may resume at this point with '--resume' after fixing the error.",
+                             returncode=ret)
 
     def getStatistic(self):
         return self.__statistic
@@ -1008,17 +1016,13 @@ cd {ROOT}
                 await self._cook(step.getAllDepSteps(), step.getPackage(), checkoutOnly, depth+1)
                 async with self.__workspaceLock(step):
                     if not self._wasAlreadyRun(step, checkoutOnly):
-                        await self._cookBuildStep(step, checkoutOnly, depth)
+                        if not checkoutOnly:
+                            buildId = await self._getBuildId(step, depth)
+                            await self._cookBuildStep(step, depth, buildId)
                         self._setAlreadyRun(step, False, checkoutOnly)
             else:
                 assert step.isPackageStep()
                 self._preparePackageStep(step)
-
-                # Prohibit up-/download if we are on the old allRelocatable
-                # policy and the package is not explicitly relocatable and
-                # built outside the sandbox.
-                mayUpOrDownload = step.getPackage().getRecipe().getRecipeSet().getPolicy('allRelocatable') or \
-                    step.isRelocatable() or (step.getSandbox() is not None)
 
                 # Calculate build-id and fingerprint of expected artifact if
                 # needed. Must be done without the workspace lock because it
@@ -1040,7 +1044,7 @@ cd {ROOT}
                 # once per invocation! Might download to a shared (temporary)
                 # location if sharing is possible for this package.
                 downloaded = False
-                if not shared and mayUpOrDownload and not checkoutOnly:
+                if not shared and not checkoutOnly:
                     async with self.__workspaceLock(step):
                         if not self._wasDownloadTried(step):
                             downloaded, audit = await self._downloadPackage(step, depth, buildId)
@@ -1054,14 +1058,14 @@ cd {ROOT}
                     await self._cook(step.getAllDepSteps(), step.getPackage(), checkoutOnly, depth+1)
                     async with self.__workspaceLock(step):
                         if not self._wasAlreadyRun(step, checkoutOnly):
-                            built, audit = await self._cookPackageStep(step, checkoutOnly,
-                                depth, mayUpOrDownload, buildId)
+                            if not checkoutOnly:
+                                built, audit = await self._cookPackageStep(step,
+                                    depth, buildId)
                             self._setAlreadyRun(step, False, checkoutOnly)
 
                 # Upload package if it was built. On Jenkins we always upload
                 # because it is essential that the tgz/buildid exists.
-                if (built or step.JENKINS) and mayUpOrDownload and self.__archive.canUpload() \
-                   and (depth <= self.__uploadDepth):
+                if (built or step.JENKINS) and self.__archive.canUpload() and (depth <= self.__uploadDepth):
                     await self.__archive.uploadPackage(step, buildId,
                         audit, step.getStoragePath(), executor=self.__executor)
 
@@ -1104,9 +1108,10 @@ cd {ROOT}
         checkoutState = checkoutStep.getScmDirectories().copy()
         checkoutState[CHECKOUT_STATE_VARIANT_ID] = (checkoutDigest, None)
         checkoutState[CHECKOUT_STATE_BUILD_ONLY] = checkoutBuildOnlyState(checkoutStep, checkoutInputHashes)
+        currentResultHash = HashOnce(checkoutStep)
         if self.__buildOnly and (BobState().getResultHash(prettySrcPath) is not None):
             inputChanged = checkoutBuildOnlyStateChanged(checkoutState, oldCheckoutState)
-            rehash = lambda: hashWorkspace(checkoutStep)
+            rehash = currentResultHash.hashWorkspace
             if checkoutStep.mayUpdate(inputChanged, BobState().getResultHash(prettySrcPath), rehash):
                 if checkoutBuildOnlyStateCompatible(checkoutState, oldCheckoutState):
                     with stepExec(checkoutStep, "UPDATE",
@@ -1115,6 +1120,7 @@ cd {ROOT}
                     newCheckoutState = oldCheckoutState.copy()
                     newCheckoutState[CHECKOUT_STATE_BUILD_ONLY] = checkoutState[CHECKOUT_STATE_BUILD_ONLY]
                     BobState().setDirectoryState(prettySrcPath, newCheckoutState)
+                    currentResultHash.invalidate() # force recalculation
                 else:
                     stepMessage(checkoutStep, "UPDATE", "WARNING: recipe changed - cannot update ({})"
                         .format(prettySrcPath), WARNING)
@@ -1138,10 +1144,23 @@ cd {ROOT}
                         # Do not use None here to distinguish it from a non-existent directory.
                         oldCheckoutState[scmDir] = (False, scmSpec)
 
-            if (self.__force or (not checkoutStep.isDeterministic()) or
-                (BobState().getResultHash(prettySrcPath) is None) or
-                not compareDirectoryState(checkoutState, oldCheckoutState) or
-                (checkoutInputHashes != BobState().getInputHashes(prettySrcPath))):
+            oldResultHash = BobState().getResultHash(prettySrcPath)
+            checkoutReason = None
+            if created:
+                checkoutReason = "initial checkout"
+            elif self.__force:
+                checkoutReason = "forced"
+            elif not checkoutStep.isDeterministic():
+                checkoutReason = "indeterminsitic"
+            elif not compareDirectoryState(checkoutState, oldCheckoutState):
+                checkoutReason = "recipe changed"
+            elif (checkoutInputHashes != BobState().getInputHashes(prettySrcPath)):
+                checkoutReason = "dependency changed"
+            elif (checkoutStep.getMainScript() or checkoutStep.getPostRunCmds()) \
+                 and (oldResultHash != currentResultHash.hashWorkspace()):
+                checkoutReason = "workspace changed"
+
+            if checkoutReason:
                 # Switch or move away old or changed source directories. In
                 # case of nested SCMs the loop relies on the property of
                 # checkoutsFromState() to return the directories in a top-down
@@ -1161,7 +1180,7 @@ cd {ROOT}
                     elif scmDigest != checkoutState.get(scmDir, (None, None))[0]:
                         canSwitch = (scmDir in scmMap) and scmDigest and \
                                      scmSpec is not None and \
-                                     scmMap[scmDir].canSwitch(scmSpec) and \
+                                     scmMap[scmDir].canSwitch(getScm(scmSpec)) and \
                                      os.path.exists(scmPath)
                         didSwitch = False
                         if canSwitch:
@@ -1219,10 +1238,11 @@ cd {ROOT}
                     BobState().setResultHash(prettySrcPath, oldCheckoutHash)
 
                 with stepExec(checkoutStep, "CHECKOUT",
-                              "{} {}".format(prettySrcPath, overridesString)) as a:
+                              "{} ({}) {}".format(prettySrcPath, checkoutReason, overridesString)) as a:
                     await self._runShell(checkoutStep, "checkout", a)
                 self.__statistic.checkouts += 1
                 checkoutExecuted = True
+                currentResultHash.invalidate() # force recalculation
                 # reflect new checkout state
                 BobState().setDirectoryState(prettySrcPath, checkoutState)
                 BobState().setInputHashes(prettySrcPath, checkoutInputHashes)
@@ -1233,12 +1253,15 @@ cd {ROOT}
 
         # We always have to rehash the directory as the user might have
         # changed the source code manually.
-        checkoutHash = hashWorkspace(checkoutStep)
+        checkoutHash = currentResultHash.hashWorkspace()
 
         # Generate audit trail before setResultHash() to force re-generation if
         # the audit trail fails.
         if checkoutHash != oldCheckoutHash or self.__force:
-            await self._generateAudit(checkoutStep, depth, checkoutHash, checkoutExecuted)
+            # Contrary to build- and package-steps, the hash of the checkout
+            # workspace is it's build-id.
+            checkoutBuildId = checkoutHash
+            await self._generateAudit(checkoutStep, depth, checkoutHash, checkoutBuildId, checkoutExecuted)
             BobState().setResultHash(prettySrcPath, checkoutHash)
 
         # upload live build-id cache in case of fresh checkout
@@ -1261,7 +1284,7 @@ cd {ROOT}
             assert predicted, "Non-predicted incorrect Build-Id found!"
             self.__handleChangedBuildId(checkoutStep, checkoutHash)
 
-    async def _cookBuildStep(self, buildStep, checkoutOnly, depth):
+    async def _cookBuildStep(self, buildStep, depth, buildBuildId):
         # Add the execution path of the build step to the buildDigest to
         # detect changes between sandbox and non-sandbox builds. This is
         # necessary in any build mode. Include the actual directories of
@@ -1276,10 +1299,6 @@ cd {ROOT}
 
         # get directory into shape
         (prettyBuildPath, created) = self._constructDir(buildStep, "build")
-        if checkoutOnly:
-            stepMessage(buildStep, "BUILD", "skipped due to --checkout-only ({})".format(prettyBuildPath),
-                    SKIPPED, IMPORTANT)
-            return
         oldBuildDigest = BobState().getDirectoryState(prettyBuildPath, False)
         if created or (buildDigest != oldBuildDigest):
             # not created but exists -> something different -> prune workspace
@@ -1303,16 +1322,18 @@ cd {ROOT}
             if not self.__cleanBuild:
                 BobState().setResultHash(prettyBuildPath, hashWorkspace(buildStep))
         else:
-            with stepExec(buildStep, "BUILD", prettyBuildPath) as a:
+            with stepExec(buildStep, "BUILD", prettyBuildPath, (ALWAYS, NORMAL)) as fullAction:
                 # Squash state because running the step will change the
                 # content. If the execution fails we have nothing reliable
                 # left and we _must_ run it again.
                 BobState().delInputHashes(prettyBuildPath)
                 BobState().setResultHash(prettyBuildPath, datetime.datetime.utcnow())
                 # build it
-                await self._runShell(buildStep, "build", a, self.__cleanBuild)
+                with stepExec(buildStep, "BUILD", prettyBuildPath, INFO) as buildAction:
+                    visibleAction = fullAction if fullAction.visible else buildAction
+                    await self._runShell(buildStep, "build", visibleAction, self.__cleanBuild)
                 buildHash = hashWorkspace(buildStep)
-            await self._generateAudit(buildStep, depth, buildHash)
+                await self._generateAudit(buildStep, depth, buildHash, buildBuildId)
             BobState().setResultHash(prettyBuildPath, buildHash)
             BobState().setVariantId(prettyBuildPath, buildDigest[0])
             BobState().setInputHashes(prettyBuildPath, buildInputHashes)
@@ -1527,7 +1548,7 @@ cd {ROOT}
 
         return wasDownloaded, audit
 
-    async def _cookPackageStep(self, packageStep, checkoutOnly, depth, mayUpOrDownload, packageBuildId):
+    async def _cookPackageStep(self, packageStep, depth, packageBuildId):
         # Dissect input parameters that lead to current workspace the last time
         (prettyPackagePath, created) = self._constructDir(packageStep, "dist")
         oldWasDownloaded, oldWasShared, oldInputHashes, oldInputBuildId = \
@@ -1549,24 +1570,23 @@ cd {ROOT}
         # downloads are not possible anymore. Even if the package was
         # previously downloaded the oldInputHashes will be None to trigger
         # an actual build.
-        if checkoutOnly:
-            stepMessage(packageStep, "PACKAGE", "skipped due to --checkout-only ({})".format(prettyPackagePath),
-                SKIPPED, IMPORTANT)
-        elif (not self.__force) and (oldInputHashes == packageInputHashes):
+        if (not self.__force) and (oldInputHashes == packageInputHashes):
             stepMessage(packageStep, "PACKAGE", "skipped (unchanged input for {})".format(prettyPackagePath),
                 SKIPPED, IMPORTANT)
             audit = os.path.join(os.path.dirname(prettyPackagePath), "audit.json.gz")
         else:
-            with stepExec(packageStep, "PACKAGE", prettyPackagePath) as a:
+            with stepExec(packageStep, "PACKAGE", prettyPackagePath, (ALWAYS, NORMAL)) as fullAction:
                 # invalidate result because folder will be cleared
                 BobState().delInputHashes(prettyPackagePath)
                 BobState().setResultHash(prettyPackagePath, datetime.datetime.utcnow())
-                await self._runShell(packageStep, "package", a)
+                with stepExec(packageStep, "PACKAGE", prettyPackagePath, INFO) as packageAction:
+                    visibleAction = fullAction if fullAction.visible else packageAction
+                    await self._runShell(packageStep, "package", visibleAction)
                 packageHash = hashWorkspace(packageStep)
                 packageDigest = await self.__getIncrementalVariantId(packageStep)
                 workspaceChanged = True
                 self.__statistic.packagesBuilt += 1
-            audit = await self._generateAudit(packageStep, depth, packageHash)
+                audit = await self._generateAudit(packageStep, depth, packageHash, packageBuildId)
 
         # Rehash directory if content was changed
         if workspaceChanged:
@@ -1636,7 +1656,7 @@ cd {ROOT}
         performed.
         """
 
-        key = b'\x00' + step._getSandboxVariantId()
+        key = b'\x00' + step.getVariantId()
         if self.__buildOnly:
             liveBId = BobState().getBuildId(key)
             if liveBId is not None: return liveBId
@@ -1649,7 +1669,7 @@ cd {ROOT}
     def __invalidateLiveBuildId(self, step):
         """Invalidate last live build-id of a step."""
 
-        key = b'\x00' + step._getSandboxVariantId()
+        key = b'\x00' + step.getVariantId()
         liveBId = BobState().getBuildId(key)
         if liveBId is not None:
             BobState().delBuildId(key)
@@ -1730,14 +1750,14 @@ cd {ROOT}
                                       step, False, self.__buildIdTasks, False)
                 for step in steps
             ]
-            ret = await self.__yieldJobWhile(gatherTasks(tasks), True)
+            ret = await self.__yieldJobWhile(gatherTasks(tasks))
         else:
             tasks = []
             for step in steps:
                 task = self.__createCookTask(lambda s=step: self.__getBuildIdTask(s, depth),
                                              step, False, self.__buildIdTasks, False)
                 tasks.append(task)
-                await self.__yieldJobWhile(asyncio.wait({task}), True)
+                await self.__yieldJobWhile(asyncio.wait({task}))
             # retrieve results as last step to --keep-going
             ret = [ t.result() for t in tasks ]
         return ret
@@ -1761,7 +1781,7 @@ cd {ROOT}
             if ret is None:
                 fingerprint = await self._getFingerprint(step, depth)
                 ret = await step.getDigestCoro(lambda x: self.__getBuildIdList(x, depth+1),
-                    True, fingerprint=fingerprint, platform=getPlatformTag(),
+                    fingerprint=fingerprint, platform=getPlatformTag(),
                     relaxTools=True)
                 self.__buildDistBuildIds[path] = ret
 
@@ -1819,7 +1839,7 @@ cd {ROOT}
 
         return await step.getDigestCoro(lambda x: getStoredVId(x))
 
-    async def __yieldJobWhile(self, coro, ignoreExecutionStop = False):
+    async def __yieldJobWhile(self, coro):
         """Yield the job slot while waiting for a coroutine.
 
         Handles the dirty details of cancellation. Might throw CancelledError
@@ -1836,30 +1856,20 @@ cd {ROOT}
                     acquired = True
                 except asyncio.CancelledError:
                     pass
-        if not self.__running and not ignoreExecutionStop: raise CancelBuildException
+        if not self.__running: raise CancelBuildException
         return ret
 
     async def _getFingerprint(self, step, depth):
-        # Use a shortcut when the sandboxFingerprints policy is not set and the
-        # step is built inside a sandbox. In this case the variant-id and
-        # build-id are already tied directly to the sandbox variant-id by
-        # getDigest(). This is pessimistic but easier than calculating the
-        # fingerprint inside the sandbox and has been the default before Bob
-        # 0.16.
-        sandbox = (step.getSandbox() is not None) and step.getSandbox().getStep()
-        if sandbox and not step.getPackage().getRecipe().getRecipeSet().getPolicy('sandboxFingerprints'):
-            return b''
-
         # A relocatable step with no fingerprinting is easy
         isFingerprinted = step._isFingerprinted()
-        trackRelocation = step.isPackageStep() and not step.isRelocatable() and \
-            step.getPackage().getRecipe().getRecipeSet().getPolicy('allRelocatable')
+        trackRelocation = step.isPackageStep() and not step.isRelocatable()
         if not isFingerprinted and not trackRelocation:
             return b''
 
         # Execute the fingerprint script (or use cached result)
         if isFingerprinted:
             # Cache based on the script digest.
+            sandbox = (step.getSandbox() is not None) and step.getSandbox().getStep()
             key = hashlib.sha1(step._getFingerprintScript().encode('utf8')).digest()
             if sandbox:
                 # Add the sandbox build-id to the cache key to distinguish
@@ -1876,7 +1886,7 @@ cd {ROOT}
                 fingerprintTask = self.__createFingerprintTask(
                     lambda: self.__calcFingerprintTask(step, sandbox, key, depth),
                     step, key)
-                await self.__yieldJobWhile(asyncio.wait({fingerprintTask}), True)
+                await self.__yieldJobWhile(asyncio.wait({fingerprintTask}))
                 fingerprint = fingerprintTask.result()
         else:
             fingerprint = b''
