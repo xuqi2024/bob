@@ -452,6 +452,7 @@ class SandboxIR(AbstractIR):
         self.__data['step'] = graph.addStep(sandbox.getStep(), True)
         self.__data['paths'] = sandbox.getPaths()
         self.__data['mounts'] = sandbox.getMounts()
+        self.__data['user'] = sandbox.getUser()
         return self
 
     @classmethod
@@ -471,6 +472,9 @@ class SandboxIR(AbstractIR):
 
     def getMounts(self):
         return self.__data['mounts']
+
+    def getUser(self):
+        return self.__data['user']
 
 class ToolIR(AbstractIR):
     @classmethod
