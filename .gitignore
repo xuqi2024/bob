@@ -9,4 +9,3 @@ __pycache__/
 /dist/
 /htmlcov
 /pym/bob/version.py
-**/__pycache__/
