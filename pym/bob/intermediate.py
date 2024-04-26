@@ -208,12 +208,7 @@ class StepIR(AbstractIR):
         return [ self.mungeStep(dep) for dep in self.__data['allDepSteps'] ]
 
     def getEnv(self):
-        envs = dict(self.__data['env'])
-        for (name, tool) in sorted(self.getTools().items()):
-            for(key, value) in tool.getEnv().items():
-                if (key in envs) and (value.startswith(("./", "../"))):
-                    envs[key] = os.path.join(tool.getStep().getExecPath(self), value)
-        return envs
+        return self.__data['env']
 
     def getPaths(self):
         # FIXME: rename to getToolPaths
@@ -485,7 +480,6 @@ class ToolIR(AbstractIR):
         self.__data['step'] = graph.addStep(tool.getStep(), True)
         self.__data['path'] = tool.getPath()
         self.__data['libs'] = tool.getLibs()
-        self.__data['envs'] = tool.getEnvironment()
         return self
 
     @classmethod
@@ -505,9 +499,6 @@ class ToolIR(AbstractIR):
 
     def getLibs(self):
         return self.__data['libs']
-
-    def getEnv(self):
-        return self.__data['envs']
 
 class RecipeIR(AbstractIR):
     @classmethod

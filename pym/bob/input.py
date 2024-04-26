@@ -687,11 +687,6 @@ class CoreSandbox(CoreItem):
         }
         self.user = recipeSet.getSandboxUser() or spec.get('user', "nobody")
 
-        self.user = {
-            k : env.substitute(v, "providedSandbox::user")
-            for (k, v) in spec.get('user', {}).items()
-        }
-
         # Calculate a "resultId" so that only identical sandboxes match
         h = hashlib.sha1()
         h.update(self.coreStep.variantId)
@@ -708,7 +703,6 @@ class CoreSandbox(CoreItem):
             h.update(struct.pack("<II", len(key), len(val)))
             h.update((key+val).encode('utf8'))
         h.update(self.user.encode('utf8'))
-
         self.resultId = h.digest()
 
     def __eq__(self, other):
@@ -770,7 +764,6 @@ class Sandbox:
         """Get user identity in sandbox.
 
         Returns one of 'nobody', 'root' or '$USER'.
-
         """
         return self.coreSandbox.user
 
@@ -2871,12 +2864,6 @@ class MountValidator:
 
         raise schema.SchemaError(None, "Mount entry must be a string or a two/three items list!")
 
-class UserValidator:
-    def validate(self, data):
-        if isinstance(data, dict):
-            return ({data[0]:data[1]})
-        raise schema.SchemaError(None, "User entry must be a dictionary type list!")
-
 class RecipeSet:
     """The RecipeSet corresponds to the project root directory.
 
@@ -3102,7 +3089,6 @@ class RecipeSet:
                 schema.Schema({
                     schema.Optional('mount') : schema.Schema([ MountValidator() ]),
                     schema.Optional('paths') : [str],
-
                     schema.Optional('user') : schema.Or("nobody", "root", "$USER"),
                 }),
                 lambda x: updateDicRecursive(self.__sandboxOpts, x),
