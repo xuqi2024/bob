@@ -64,8 +64,10 @@ struct Options {
   int num_mounts;            // How many mounts were specified
   char **create_dirs;        // empty dirs to create (-d)
   int num_create_dirs;       // How many empty dirs to create were specified
+
   uid_t uid;                 // User id in namespace
   uid_t gid;                 // Group id in namespace
+
   int create_netns;          // If 1, create a new network namespace.
   const char *host_name;     // Host name (-H)
 };
@@ -140,6 +142,8 @@ static void Usage(int argc, char *const *argv, const char *fmt, ...) {
       "  -i if set, keep the uid/gid\n"
       "  -r if set, make the uid/gid be root, otherwise use nobody\n"
       "  -H <name> set host name\n"
+      "  -U <uid> set custom uid\n"
+      "  -G <gid> set custom gid\n"
       "  -D  if set, debug info will be printed\n"
       "  -l <file>  redirect stdout to a file\n"
       "  -L <file>  redirect stderr to a file\n"
@@ -242,6 +246,20 @@ static void ParseOptionsFile(const char *filename, struct Options *opt) {
   ParseCommandLine(sub_argc, sub_argv, opt);
 }
 
+// Function to check if a string is a numeric string
+bool IsNumeric(const char *str) {
+    if (str == NULL || *str == '\0') {
+        return false;
+    }
+    while (*str) {
+        if (*str < '0' || *str > '9') {
+            return false;
+        }
+        str++;
+    }
+    return true;
+}
+
 // Parse the command line flags and return the result in an Options structure
 // passed as argument.
 static void ParseCommandLine(int argc, char *const *argv, struct Options *opt) {
@@ -250,6 +268,7 @@ static void ParseCommandLine(int argc, char *const *argv, struct Options *opt) {
   int c;
 
   while ((c = getopt(argc, argv, ":CDd:il:L:m:M:nrS:W:w:H:")) != -1) {
+
     switch (c) {
       case 'C':
         // Shortcut for the "does this system support sandboxing" check.
@@ -330,6 +349,20 @@ static void ParseCommandLine(int argc, char *const *argv, struct Options *opt) {
         break;
       case 'H':
         opt->host_name = optarg;
+        break;
+      case 'U':
+        if (IsNumeric(optarg)) {
+          opt->custom_uid = atoi(optarg);
+        } else {
+          Usage(argc, argv, "The -U option must be a numeric string.");
+        }
+        break;
+      case 'G':
+        if (IsNumeric(optarg)) {
+          opt->custom_gid = atoi(optarg);
+        } else {
+          Usage(argc, argv, "The -G option must be a numeric string.");
+        }
         break;
       case 'D':
         global_debug = true;
@@ -686,6 +719,8 @@ static void ExecCommand(char *const *argv) {
 
 int main(int argc, char *const argv[]) {
   struct Options opt;
+  opt.custom_uid =  kNobodyUid;
+  opt.custom_gid =  kNobodyGid;
   memset(&opt, 0, sizeof(opt));
   opt.uid = kNobodyUid;
   opt.gid = kNobodyGid;
@@ -724,8 +759,10 @@ int main(int argc, char *const argv[]) {
   // outside environment.
   CHECK_CALL(mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL));
 
+
   SetupDirectories(&opt, opt.uid);
   SetupUserNamespace(uid, gid, opt.uid, opt.gid);
+
   if (opt.host_name) {
     CHECK_CALL(sethostname(opt.host_name, strlen(opt.host_name)));
   }
