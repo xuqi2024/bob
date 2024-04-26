@@ -64,9 +64,10 @@ struct Options {
   int num_mounts;            // How many mounts were specified
   char **create_dirs;        // empty dirs to create (-d)
   int num_create_dirs;       // How many empty dirs to create were specified
-  int fake_root;             // Pretend to be root inside the namespace.
-  uid_t custom_uid;           // Specify a specific user ID
-  uid_t custom_gid;           // Specify a specific user group ID
+
+  uid_t uid;                 // User id in namespace
+  uid_t gid;                 // Group id in namespace
+
   int create_netns;          // If 1, create a new network namespace.
   const char *host_name;     // Host name (-H)
 };
@@ -138,6 +139,7 @@ static void Usage(int argc, char *const *argv, const char *fmt, ...) {
       "specifies where to\n"
       "    mount it in the sandbox.\n"
       "  -n if set, a new network namespace will be created\n"
+      "  -i if set, keep the uid/gid\n"
       "  -r if set, make the uid/gid be root, otherwise use nobody\n"
       "  -H <name> set host name\n"
       "  -U <uid> set custom uid\n"
@@ -265,7 +267,8 @@ static void ParseCommandLine(int argc, char *const *argv, struct Options *opt) {
   extern int optind, optopt;
   int c;
 
-  while ((c = getopt(argc, argv, ":CDd:l:L:m:M:nrS:W:w:H:U:G:")) != -1) {
+  while ((c = getopt(argc, argv, ":CDd:il:L:m:M:nrS:W:w:H:")) != -1) {
+
     switch (c) {
       case 'C':
         // Shortcut for the "does this system support sandboxing" check.
@@ -302,6 +305,10 @@ static void ParseCommandLine(int argc, char *const *argv, struct Options *opt) {
         }
         opt->create_dirs[opt->num_create_dirs++] = optarg;
         break;
+      case 'i':
+        opt->uid = getuid();
+        opt->gid = getgid();
+        break;
       case 'M':
         if (optarg[0] != '/') {
           Usage(argc, argv,
@@ -337,7 +344,8 @@ static void ParseCommandLine(int argc, char *const *argv, struct Options *opt) {
         opt->create_netns = 1;
         break;
       case 'r':
-        opt->fake_root = 1;
+        opt->uid = 0;
+        opt->gid = 0;
         break;
       case 'H':
         opt->host_name = optarg;
@@ -714,6 +722,8 @@ int main(int argc, char *const argv[]) {
   opt.custom_uid =  kNobodyUid;
   opt.custom_gid =  kNobodyGid;
   memset(&opt, 0, sizeof(opt));
+  opt.uid = kNobodyUid;
+  opt.gid = kNobodyGid;
   opt.mount_sources = calloc(argc, sizeof(char *));
   opt.mount_targets = calloc(argc, sizeof(char *));
   opt.mount_rw = calloc(argc, sizeof(bool));
@@ -749,13 +759,10 @@ int main(int argc, char *const argv[]) {
   // outside environment.
   CHECK_CALL(mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL));
 
-  if (opt.fake_root) {
-    SetupDirectories(&opt, 0);
-    SetupUserNamespace(uid, gid, 0, 0);
-  } else {
-    SetupDirectories(&opt, opt.custom_uid);
-    SetupUserNamespace(uid, gid, opt.custom_uid, opt.custom_gid);
-  }
+
+  SetupDirectories(&opt, opt.uid);
+  SetupUserNamespace(uid, gid, opt.uid, opt.gid);
+
   if (opt.host_name) {
     CHECK_CALL(sethostname(opt.host_name, strlen(opt.host_name)));
   }

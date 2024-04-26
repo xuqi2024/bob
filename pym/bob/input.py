@@ -685,6 +685,7 @@ class CoreSandbox(CoreItem):
             k : env.substitute(v, "providedSandbox::environment")
             for (k, v) in spec.get('environment', {}).items()
         }
+        self.user = recipeSet.getSandboxUser() or spec.get('user', "nobody")
 
         self.user = {
             k : env.substitute(v, "providedSandbox::user")
@@ -706,9 +707,8 @@ class CoreSandbox(CoreItem):
         for (key, val) in sorted(self.environment.items()):
             h.update(struct.pack("<II", len(key), len(val)))
             h.update((key+val).encode('utf8'))
-        for (key, val) in sorted(self.user.items()):
-            h.update(struct.pack("<II", len(key), len(val)))
-            h.update((key+val).encode('utf8'))
+        h.update(self.user.encode('utf8'))
+
         self.resultId = h.digest()
 
     def __eq__(self, other):
@@ -767,10 +767,10 @@ class Sandbox:
         return self.coreSandbox.enabled
 
     def getUser(self):
-        """Get user variables.
+        """Get user identity in sandbox.
 
-        Returns the dictionary of user variables that are defined by the
-        sandbox.
+        Returns one of 'nobody', 'root' or '$USER'.
+
         """
         return self.coreSandbox.user
 
@@ -3102,7 +3102,8 @@ class RecipeSet:
                 schema.Schema({
                     schema.Optional('mount') : schema.Schema([ MountValidator() ]),
                     schema.Optional('paths') : [str],
-                    schema.Optional('user') : schema.Schema([ UserValidator() ]),
+
+                    schema.Optional('user') : schema.Or("nobody", "root", "$USER"),
                 }),
                 lambda x: updateDicRecursive(self.__sandboxOpts, x),
                 True
@@ -3367,6 +3368,9 @@ class RecipeSet:
 
     def getSandboxPaths(self):
         return list(reversed(self.__sandboxOpts.get("paths", [])))
+
+    def getSandboxUser(self):
+        return self.__sandboxOpts.get("user")
 
     def loadBinary(self, path):
         return self.__cache.loadBinary(path)
@@ -3659,7 +3663,7 @@ class RecipeSet:
                 schema.Optional('mount') : schema.Schema([ MountValidator() ],
                     error="provideSandbox: invalid 'mount' property"),
                 schema.Optional('environment') : VarDefineValidator("provideSandbox::environment"),
-                schema.Optional('user') : VarDefineValidator("provideSandbox::user"),
+                schema.Optional('user') : schema.Or("nobody", "root", "$USER"),
             }),
             schema.Optional('root') : schema.Or(bool, str, IfExpression),
             schema.Optional('shared') : bool,

@@ -313,6 +313,13 @@ class Invoker:
         if 'gid' in self.__spec.sandboxUser:
             cmdArgs.extend(["-G", self.__get_gid_value(self.__spec.sandboxUser['gid'])])
 
+        if self.__spec.sandboxUser == "root":
+            cmdArgs.append("-r")
+        elif self.__spec.sandboxUser == "$USER":
+            cmdArgs.append("-i")
+        else:
+            assert self.__spec.sandboxUser == "nobody"
+
         return cmdArgs
 
     async def executeStep(self, mode, clean=False, keepSandbox=False):
