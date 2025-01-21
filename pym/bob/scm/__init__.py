@@ -10,6 +10,7 @@ from .git import GitScm, GitAudit
 from .imp import ImportScm, ImportAudit
 from .svn import SvnScm, SvnAudit
 from .url import UrlScm, UrlAudit
+from .repo import RepoScm, RepoAudit
 import os.path
 import schema
 
@@ -29,6 +30,8 @@ def auditFromData(data):
         scm = ImportAudit
     elif typ == "url":
         scm = UrlAudit
+    elif typ == "repo":
+        scm = RepoAudit
     elif typ == "svn":
         scm = SvnAudit
     else:
@@ -57,6 +60,8 @@ def getScm(spec, overrides=[], recipeSet=None):
         return SvnScm(spec, overrides)
     elif scm == "cvs":
         return CvsScm(spec, overrides)
+    elif scm == "repo":
+        return RepoScm(spec, overrides)
     elif scm == "url":
         return UrlScm(spec, overrides,
             recipeSet and recipeSet.getPolicy('scmIgnoreUser'),

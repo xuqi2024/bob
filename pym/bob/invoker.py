@@ -178,7 +178,6 @@ class Invoker:
                            errors='replace', specEnv=True, **kwargs):
         cmd = " ".join(quote(a) for a in args)
         self.trace(cmd)
-
         _env = self.__env.copy()
         if specEnv: _env.update(self.__spec.env)
         if env is not None: _env.update(env)

@@ -8,7 +8,7 @@ from .errors import ParseError, BobError
 from .languages import getLanguage, ScriptLanguage, BashLanguage, PwshLanguage
 from .pathspec import PackageSet
 from .scm import CvsScm, GitScm, ImportScm, SvnScm, UrlScm, ScmOverride, \
-    auditFromDir, getScm, SYNTHETIC_SCM_PROPS
+    auditFromDir, getScm, SYNTHETIC_SCM_PROPS,RepoScm
 from .state import BobState
 from .stringparser import checkGlobList, Env, DEFAULT_STRING_FUNS, IfExpression
 from .tty import InfoOnce, Warn, WarnOnce, setColorMode, setParallelTUIThreshold
@@ -2937,6 +2937,7 @@ class RecipeSet:
         'git' : GitScm.SCHEMA,
         'svn' : SvnScm.SCHEMA,
         'cvs' : CvsScm.SCHEMA,
+        'repo' : RepoScm.SCHEMA,
         'url' : UrlScm.SCHEMA,
         'import' : ImportScm.SCHEMA,
     })
