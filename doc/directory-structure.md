@@ -1920,3 +1920,613 @@ pipeline:
 
 这种目录结构是经过精心设计的,能够很好地支持软件的整个开发生命周期。理解和遵循这种结构,可以帮助我们更高效地使用Bob构建工具。
 
+## Bob Dev vs Build 模式
+
+### 1. 基本区别
+
+```yaml
+# bob build: 生产构建模式
+buildScript: |
+    # 完整的构建流程
+    make clean
+    make all
+    make install
+
+# bob dev: 开发模式
+devScript: |
+    # 增量构建，保留中间文件
+    make -j${PARALLEL}
+    
+    # 支持交互式调试
+    gdb ./myapp
+```
+
+### 2. 工作目录处理
+
+```bash
+# bob build
+work/
+└── moduleA/
+    ├── src/    # 每次构建重新checkout
+    ├── build/  # 构建完成后可能清理
+    └── dist/   # 保留最终结果
+
+# bob dev
+dev/
+└── moduleA/
+    ├── src/    # 保持源码，方便修改
+    ├── build/  # 保留中间文件，支持增量
+    └── dist/   # 方便测试的临时结果
+```
+
+### 3. 依赖处理
+
+```yaml
+# bob build模式
+depends:
+    - name: libA
+      use: [dist]  # 使用发布版本
+
+# bob dev模式
+depends:
+    - name: libA
+      use: [build]  # 使用开发版本
+      forward: True # 传递依赖
+```
+
+### 4. 环境变量
+
+```yaml
+# 开发环境配置
+environment:
+    BUILD_MODE: "${BOB_MODE}"  # build或dev
+    DEBUG_FLAGS: "${BOB_MODE == 'dev' ? '-g -O0' : '-O2'}"
+    
+devEnvironment:  # 仅在dev模式生效
+    CCACHE_DIR: "${DEV_ROOT}/ccache"
+    GDB_INIT: "${DEV_ROOT}/.gdbinit"
+```
+
+## 插件系统
+
+### 1. 插件基础结构
+
+```python
+# plugins/my_plugin.py
+from bob.input import Recipe
+
+class MyPlugin:
+    def defineHooks(self, hooks):
+        # 注册钩子
+        hooks.buildStepStart.append(self.__onBuildStart)
+        hooks.buildStepFinished.append(self.__onBuildFinish)
+    
+    def __onBuildStart(self, step):
+        # 构建开始时的处理
+        print(f"Starting build: {step.getPackage().getName()}")
+    
+    def __onBuildFinish(self, step, rc):
+        # 构建完成时的处理
+        print(f"Build finished with rc={rc}")
+```
+
+### 2. 配置插件
+
+```yaml
+# config.yaml
+plugins:
+    - myPlugin: 
+        class: plugins.my_plugin.MyPlugin
+        settings:
+            logLevel: debug
+            metricsEnabled: true
+```
+
+### 3. 常用插件类型
+
+```python
+# 1. 构建钩子插件
+class BuildHookPlugin:
+    def onBuildStart(self, step):
+        pass
+    
+    def onBuildFinish(self, step, rc):
+        pass
+
+# 2. SCM插件
+class CustomSCM:
+    def invoke(self, spec):
+        # 实现自定义源码管理
+        pass
+
+# 3. 构建统计插件
+class BuildMetrics:
+    def recordMetric(self, name, value):
+        # 记录构建指标
+        pass
+```
+
+### 4. 插件开发示例
+
+```python
+# 1. 构建时间统计插件
+class BuildTimePlugin:
+    def __init__(self):
+        self.startTimes = {}
+    
+    def defineHooks(self, hooks):
+        hooks.buildStepStart.append(self.onStart)
+        hooks.buildStepFinished.append(self.onFinish)
+    
+    def onStart(self, step):
+        self.startTimes[step.getPackage().getName()] = time.time()
+    
+    def onFinish(self, step, rc):
+        name = step.getPackage().getName()
+        duration = time.time() - self.startTimes[name]
+        print(f"{name} took {duration:.2f}s")
+
+# 2. 构建通知插件
+class NotificationPlugin:
+    def defineHooks(self, hooks):
+        hooks.buildStepFinished.append(self.notify)
+    
+    def notify(self, step, rc):
+        if rc != 0:
+            self.sendAlert(f"Build failed: {step.getPackage().getName()}")
+```
+
+### 5. 插件最佳实践
+
+1. 错误处理
+   ```python
+   def safeExecute(self, func):
+       try:
+           return func()
+       except Exception as e:
+           logging.error(f"Plugin error: {e}")
+           return None
+   ```
+
+2. 配置管理
+   ```python
+   class ConfigurablePlugin:
+       def __init__(self, **settings):
+           self.settings = settings
+           
+       def loadConfig(self):
+           # 验证配置
+           if 'required_setting' not in self.settings:
+               raise ValueError("Missing required setting")
+   ```
+
+3. 性能考虑
+   ```python
+   class CachedPlugin:
+       def __init__(self):
+           self.cache = {}
+           
+       def expensiveOperation(self, key):
+           if key not in self.cache:
+               self.cache[key] = self.compute(key)
+           return self.cache[key]
+   ```
+
+### 6. 调试技巧
+
+```python
+# 插件调试辅助
+class DebugPlugin:
+    def __init__(self):
+        self.debug = os.environ.get('BOB_DEBUG', '0') == '1'
+    
+    def log(self, message):
+        if self.debug:
+            print(f"[DEBUG] {message}")
+            
+    def trace(self, func):
+        def wrapper(*args, **kwargs):
+            self.log(f"Calling {func.__name__}")
+            result = func(*args, **kwargs)
+            self.log(f"Finished {func.__name__}")
+            return result
+        return wrapper
+```
+
+这种目录结构是经过精心设计的,能够很好地支持软件的整个开发生命周期。理解和遵循这种结构,可以帮助我们更高效地使用Bob构建工具。
+
+## Bob菜谱语法指南
+
+### 1. 基础结构
+
+```yaml
+# recipes/hello.yaml - 基础菜谱示例
+root: True  # 标记为根菜谱
+
+# 包的基本信息
+name: hello
+version: "1.0.0"
+
+# 构建脚本
+buildScript: |
+    make -j${PARALLEL}
+
+# 打包脚本
+packageScript: |
+    make install DESTDIR=${PACKAGE_DIR}
+```
+
+### 2. 依赖管理
+
+```yaml
+# 依赖声明示例
+depends:
+    # 基本依赖
+    - libA
+    
+    # 带版本的依赖
+    - name: libB
+      version: ">=2.0.0"
+    
+    # 条件依赖
+    - name: libC
+      if: "${PLATFORM} == 'linux'"
+    
+    # 使用特定结果
+    - name: libD
+      use: [tools]  # 可选: tools, result, deps
+    
+    # 开发依赖
+    - name: libE
+      dev: True
+```
+
+### 3. 环境变量
+
+```yaml
+# 环境变量配置
+environment:
+    # 直接赋值
+    CC: "gcc"
+    CFLAGS: "-O2"
+    
+    # 使用其他变量
+    PATH: "${TOOLCHAIN_DIR}/bin:${PATH}"
+    
+    # 条件赋值
+    DEBUG_FLAGS: "${DEBUG == 'yes' ? '-g' : ''}"
+    
+    # 列表变量
+    INCLUDE_DIRS: ["include", "src"]
+    LIBS: ["pthread", "dl"]
+
+# 开发环境特定变量
+devEnvironment:
+    CFLAGS: "-g -O0"
+    CCACHE_DIR: "${DEV_ROOT}/ccache"
+```
+
+### 4. 变体管理
+
+```yaml
+# 多变体配置
+multiPackage:
+    # 调试版本
+    debug:
+        environment:
+            BUILD_TYPE: "Debug"
+            CFLAGS: "-g -O0"
+        buildScript: |
+            cmake -DCMAKE_BUILD_TYPE=Debug .
+            make -j${PARALLEL}
+    
+    # 发布版本
+    release:
+        environment:
+            BUILD_TYPE: "Release"
+            CFLAGS: "-O3"
+        buildScript: |
+            cmake -DCMAKE_BUILD_TYPE=Release .
+            make -j${PARALLEL}
+```
+
+### 5. 类继承
+
+```yaml
+# 基础类定义 - classes/base.yaml
+classes:
+    base-build:
+        environment:
+            CC: "gcc"
+            CXX: "g++"
+        buildScript: |
+            ./configure
+            make -j${PARALLEL}
+
+# 使用类 - recipes/app.yaml
+inherit: [base-build]
+environment:
+    APP_VERSION: "1.0.0"
+```
+
+### 6. 条件语句
+
+```yaml
+# 条件配置示例
+if: "${PLATFORM} == 'linux'"
+then:
+    environment:
+        OS: "linux"
+    depends:
+        - linux-headers
+elif: "${PLATFORM} == 'windows'"
+then:
+    environment:
+        OS: "windows"
+    depends:
+        - win-sdk
+else:
+    environment:
+        OS: "unknown"
+```
+
+### 7. 工具链配置
+
+```yaml
+# 工具链配置示例
+environment:
+    ARCH: "arm64"
+    CROSS_COMPILE: "aarch64-linux-gnu-"
+    
+    # 工具链变量
+    CC: "${CROSS_COMPILE}gcc"
+    CXX: "${CROSS_COMPILE}g++"
+    AR: "${CROSS_COMPILE}ar"
+    STRIP: "${CROSS_COMPILE}strip"
+    
+    # 编译标志
+    CFLAGS: "-march=armv8-a"
+    LDFLAGS: "-L${SYSROOT}/usr/lib"
+```
+
+### 8. 源码管理
+
+```yaml
+# SCM配置
+scm:
+    # git仓库
+    git:
+        url: "https://github.com/org/repo.git"
+        branch: "master"
+        tag: "v1.0.0"
+        
+    # 本地目录
+    url: "file:///path/to/source"
+    
+    # 压缩包
+    url: "https://example.com/source.tar.gz"
+    digestSHA1: "0123456789abcdef"
+```
+
+### 9. 高级特性
+
+```yaml
+# 复杂配置示例
+root: True
+name: complex-app
+
+# 共享变量
+vars:
+    BASE_FLAGS: "-Wall -Wextra"
+    
+# 构建矩阵
+multiPackage:
+    "{{arch}}-{{variant}}":
+        args: [[arm64, x86_64], [debug, release]]
+        environment:
+            ARCH: "{{arch}}"
+            CFLAGS: "${BASE_FLAGS} {{variant == 'debug' ? '-g' : '-O2'}}"
+
+# 钩子脚本
+checkoutScript: |
+    # 检出前的准备工作
+    prepare-workspace.sh
+    
+buildVars: [ARCH, VARIANT]
+buildScript: |
+    # 构建配置生成
+    ./configure \
+        --arch=${ARCH} \
+        --enable-${VARIANT}
+    
+    # 并行构建
+    make -j${PARALLEL}
+    
+# 构建后处理
+postBuildHook: |
+    # 运行测试
+    make test
+    
+# 打包配置
+packageVars: [ARCH]
+packageScript: |
+    # 创建安装目录
+    mkdir -p ${PACKAGE_DIR}/bin
+    mkdir -p ${PACKAGE_DIR}/lib
+    
+    # 安装文件
+    cp build/bin/* ${PACKAGE_DIR}/bin/
+    cp build/lib/* ${PACKAGE_DIR}/lib/
+    
+    # 生成配置文件
+    cat > ${PACKAGE_DIR}/config.ini << EOF
+    arch=${ARCH}
+    version=${VERSION}
+    EOF
+```
+
+### 10. 最佳实践
+
+1. 模块化设计
+   ```yaml
+   # 将公共配置抽取到类中
+   classes:
+       common:
+           environment:
+               COMMON_FLAGS: "-Wall"
+   
+   # 在具体菜谱中使用
+   inherit: [common]
+   ```
+
+2. 变量管理
+   ```yaml
+   # 在顶层定义关键变量
+   vars:
+       PROJECT_VERSION: "1.0.0"
+       
+   # 在子菜谱中引用
+   environment:
+       VERSION: "${PROJECT_VERSION}"
+   ```
+
+3. 依赖组织
+   ```yaml
+   # 按功能分组依赖
+   depends:
+       # 核心依赖
+       - name: core-lib
+         use: [result]
+         
+       # 开发工具
+       - name: dev-tools
+         use: [tools]
+         dev: True
+   ```
+
+### 11. Use标签详解
+
+```yaml
+depends:
+    # 核心依赖
+    - name: core-lib
+      use: [result]
+    
+    # 开发工具
+    - name: dev-tools
+      use: [tools]
+      dev: True
+```
+
+### Use标签使用示例
+
+```yaml
+# 1. 使用预编译库
+depends:
+    - name: boost
+      use: [result]  # 使用boost的库文件和头文件
+buildScript: |
+    g++ -I${boost_root}/include -L${boost_root}/lib main.cpp
+
+# 2. 使用构建工具
+depends:
+    - name: gcc-toolchain
+      use: [tools]   # 使用gcc工具链
+environment:
+    CC: "${gcc_toolchain_root}/bin/gcc"
+    CXX: "${gcc_toolchain_root}/bin/g++"
+
+# 3. 继承依赖信息
+depends:
+    - name: qt5
+      use: [deps]    # 继承Qt5的依赖配置
+buildScript: |
+    # 自动继承Qt5的编译和链接标志
+    make ${qt5_CFLAGS} ${qt5_LIBS}
+
+# 4. 完整开发环境
+depends:
+    - name: dev-sdk
+      use: [result, tools, deps]  # 完整的SDK环境
+```
+
+### Use标签最佳实践
+
+```yaml
+# 1. 分层依赖管理
+depends:
+    # 运行时依赖
+    - name: runtime-lib
+      use: [result]
+    
+    # 构建工具
+    - name: build-tools
+      use: [tools]
+      dev: True
+    
+    # 开发依赖
+    - name: test-framework
+      use: [result, deps]
+      dev: True
+
+# 2. 智能依赖选择
+depends:
+    - name: protobuf
+      use: [tools]     # 构建时只需要protoc工具
+    - name: protobuf-runtime
+      use: [result]    # 运行时需要库文件
+
+# 3. 依赖优化
+depends:
+    - name: large-toolchain
+      use: [tools]     # 只使用工具，不需要完整环境
+      forward: False   # 不传递给其他模块
+```
+
+### 注意事项
+
+1. 性能影响
+   ```yaml
+   # 避免不必要的依赖
+   depends:
+       - name: huge-sdk
+         use: [result]   # 可能导致不必要的文件复制
+   
+   # 优化后
+   depends:
+       - name: huge-sdk
+         use: [tools]    # 只使用必要的工具
+   ```
+
+2. 依赖冲突
+   ```yaml
+   # 潜在冲突
+   depends:
+       - name: libA
+         use: [result]
+       - name: libB
+         use: [result]   # 可能与libA有冲突
+   
+   # 解决方案
+   depends:
+       - name: libA
+         use: [result]
+         relocate: "libA"  # 重定位到子目录
+       - name: libB
+         use: [result]
+         relocate: "libB"
+   ```
+
+3. 开发效率
+   ```yaml
+   # 开发模式
+   devEnvironment:
+       # 使用本地工具优化开发效率
+       PATH: "${HOST_TOOLS}:${PATH}"
+   
+   depends:
+       - name: cross-toolchain
+         use: [tools]
+         if: "${TARGET} != ${HOST}"  # 只在交叉编译时使用
+   ```
+
