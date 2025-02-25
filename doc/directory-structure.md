@@ -12,6 +12,182 @@ work/<package>/
 └── dist/ # 最终构建结果
 ```
 
+## 为什么要分离src/build/dist目录
+
+### 1. 源码管理的需求
+
+如果不分离，可能出现以下问题：
+```bash
+# 问题场景：源码和构建混在一起
+project/
+├── main.c
+├── main.o      # 编译产生的目标文件
+├── app         # 生成的可执行文件
+└── .git/       # 版本控制目录
+
+# 导致的问题：
+# 1. git status 会显示大量构建产物
+# 2. IDE索引会包含无关文件
+# 3. 清理构建结果可能误删源码
+```
+
+### 2. 增量构建的需求
+
+```yaml
+# 不分离目录的构建脚本
+buildScript: |
+    # 问题：难以判断哪些是源文件，哪些是构建产物
+    make clean  # 可能会清理掉手动修改的文件
+    make all    # 总是全量构建
+
+# 分离目录的构建脚本
+buildScript: |
+    # 清晰的职责划分：
+    # - src/只存放源码
+    # - build/只存放构建过程文件
+    # - dist/只存放最终产物
+    cd ${BUILD_DIR}
+    make -f ${SRC_DIR}/Makefile  # 使用源码目录的Makefile
+    make install DESTDIR=${DIST_DIR}  # 安装到发布目录
+```
+
+### 3. 并行构建的需求
+
+```yaml
+# 同一目录并行构建的问题
+buildScript: |
+    # 多个构建任务同时运行时：
+    make -j8  # 可能相互干扰
+    # 1. 临时文件名冲突
+    # 2. 中间文件互相覆盖
+    # 3. 依赖关系混乱
+
+# 分离目录的并行构建
+buildScript: |
+    # 每个构建任务使用独立的build目录
+    cd ${BUILD_DIR}  # 构建目录隔离
+    make -j8         # 安全的并行构建
+```
+
+### 4. 依赖管理的需求
+
+```yaml
+# 不分离的依赖处理
+depends:
+    - name: libA
+      use: [result]  # 难以区分源码和构建结果
+
+# 分离后的依赖处理
+depends:
+    - name: libA
+      use: [src]     # 明确使用源码
+    - name: libB
+      use: [dist]    # 明确使用构建结果
+```
+
+### 5. 开发效率的考虑
+
+```bash
+# 不分离的开发流程
+$ vim main.c    # 修改源码
+$ make clean    # 需要清理，防止文件混乱
+$ make          # 全量重新构建
+
+# 分离后的开发流程
+$ vim src/main.c     # 源码在固定位置
+$ make -C build      # 增量构建
+$ ls dist/          # 查看最终结果
+```
+
+### 6. 构建缓存的需求
+
+```yaml
+# 缓存策略
+cache:
+    src:     # 源码缓存
+        ttl: 7d
+    build:   # 构建缓存
+        size: 50G
+    dist:    # 制品缓存
+        policy: "keep-last-5"
+```
+
+### 7. CI/CD的需求
+
+```yaml
+# CI/CD流水线
+pipeline:
+    stages:
+        - name: "源码检查"
+          paths: ["src/**"]    # 只关注源码变化
+        
+        - name: "构建"
+          artifacts:
+              - "build/**/*.o"  # 缓存中间文件
+        
+        - name: "部署"
+          artifacts:
+              - "dist/**"      # 只部署最终产物
+```
+
+### 8. 问题诊断的需求
+
+```bash
+# 分离目录便于问题诊断
+$ ls src/   # 检查源码完整性
+$ ls build/ # 检查构建中间文件
+$ ls dist/  # 检查最终产物
+
+# 清理策略更清晰
+$ rm -rf build/  # 清理构建文件
+$ rm -rf dist/   # 清理发布文件
+# src/保持不变，随时可以重新构建
+```
+
+### 9. 安全性考虑
+
+```yaml
+# 权限控制
+permissions:
+    src:           # 源码权限
+        mode: 0644
+        owner: dev
+    build:         # 构建权限
+        mode: 0755
+        owner: builder
+    dist:          # 发布权限
+        mode: 0644
+        owner: deploy
+```
+
+### 10. 存储效率
+
+```yaml
+# 存储策略
+storage:
+    src:    # 源码存储
+        type: "git"
+        compression: false
+    build:  # 构建存储
+        type: "temp"
+        cleanup: true
+    dist:   # 制品存储
+        type: "artifactory"
+        compression: true
+```
+
+不分离这些目录可能导致：
+1. 源码管理混乱
+2. 构建效率降低
+3. 并行构建冲突
+4. 依赖关系不清晰
+5. 开发效率受影响
+6. 缓存策略复杂
+7. CI/CD流程困难
+8. 问题诊断困难
+9. 权限管理复杂
+10. 存储效率低下
+
 ## 设计目的
 
 这种目录结构设计主要是为了:
